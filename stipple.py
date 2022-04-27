@@ -94,8 +94,8 @@ def voronoi_stipple(I, thresh, target_points, p=1, canny_sigma=0, n_iters=10, do
     
     Parameters
     ----------
-    I: ndarray(M, N)
-        A grayscale image
+    I: ndarray(M, N, 3)
+        An RGB/RGBA or grayscale image
     thresh: float
         Amount above which to make a point 1
     p: float
@@ -106,10 +106,19 @@ def voronoi_stipple(I, thresh, target_points, p=1, canny_sigma=0, n_iters=10, do
         Number of iterations
     do_plot: bool
         Whether to plot each iteration
+    
+    Returns
+    -------
+    ndarray(N, 2)
+        An array of the stipple pattern, with x coordinates along the first
+        column and y coordinates along the second column
     """
     from scipy.ndimage import distance_transform_edt
     import time
-
+    if np.max(I) > 1:
+        I = I/255
+    if len(I.shape) > 2:
+        I = 0.2125*I[:, :, 0] + 0.7154*I[:, :, 1] + 0.0721*I[:, :, 2]
     ## Step 1: Get weights and initialize random point distributin
     ## via rejection sampling
     weights = get_weights(I, thresh, p, canny_sigma)
@@ -146,7 +155,8 @@ def voronoi_stipple(I, thresh, target_points, p=1, canny_sigma=0, n_iters=10, do
                 mask[i, j] = ind2num[coord]
         nums, denoms = get_centroids(mask, len(ind2num), weights)
         X = nums/denoms[:, None]
-    return X
+    X[:, 0] = I.shape[0]-X[:, 0]
+    return np.fliplr(X)
 
 def density_filter(X, fac, k=1):
     """
