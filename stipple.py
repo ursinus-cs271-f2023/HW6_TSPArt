@@ -36,9 +36,10 @@ def get_weights(I, thresh, p=1, canny_sigma=0):
     return weights
 
 
-def rejection_sample_by_density(weights, target_points):
+def stochastic_universal_sample(weights, target_points, jitter=0.1):
     """
-    Sample points according to a particular density, by rejection sampling
+    Sample pixels according to a particular density using 
+    stochastic universal sampling
 
     Parameters
     ----------
@@ -46,26 +47,31 @@ def rejection_sample_by_density(weights, target_points):
         The weights of each pixel, in the range [0, 1]
     target_points: int
         The number of desired samples
+    jitter: float
+        Perform a jitter with this standard deviation of a pixel
     
     Returns
     -------
     ndarray(N, 2)
         Location of point samples
     """
-    X = np.zeros((target_points, 2))
+    choices = np.zeros(target_points, dtype=int)
+    w = np.zeros(weights.size+1)
+    order = np.random.permutation(weights.size)
+    w[1::] = weights.flatten()[order]
+    w = w/np.sum(w)
+    w = np.cumsum(w)
+    p = np.random.rand() # Cumulative probability index, start off random
     idx = 0
-    while idx < target_points:
-        print(idx)
-        I = np.random.rand(10*target_points)*(weights.shape[0]-1)
-        J = np.random.rand(10*target_points)*(weights.shape[1]-1)
-        P = np.random.rand(10*target_points)
-        for i, j, p in zip(I, J, P):
-            weight = weights[int(np.floor(i)), int(np.floor(j))]
-            if p < weight:
-                X[idx, :] = [i, j]
-                idx += 1
-                if idx == target_points:
-                    return X
+    for i in range(target_points):
+        while idx < weights.size and not (p >= w[idx] and p < w[idx+1]):
+            idx += 1
+        idx = idx % weights.size
+        choices[i] = order[idx]
+        p = (p + 1/target_points) % 1
+    X = np.array(list(np.unravel_index(choices, weights.shape)), dtype=float).T
+    if jitter > 0:
+        X += jitter*np.random.randn(X.shape[0], 2)
     return X
 
 @jit(nopython=True)
@@ -122,7 +128,7 @@ def voronoi_stipple(I, thresh, target_points, p=1, canny_sigma=0, n_iters=10, do
     ## Step 1: Get weights and initialize random point distributin
     ## via rejection sampling
     weights = get_weights(I, thresh, p, canny_sigma)
-    X = rejection_sample_by_density(weights, target_points)
+    X = stochastic_universal_sample(weights, target_points)
     X = np.array(np.round(X), dtype=int)
     X[X[:, 0] >= weights.shape[0], 0] = weights.shape[0]-1
     X[X[:, 1] >= weights.shape[1], 1] = weights.shape[1]-1
