@@ -2,6 +2,32 @@ import numpy as np
 import matplotlib.pyplot as plt
 from numba import jit
 
+def read_image(path):
+    """
+    A wrapper around matplotlib's image loader that deals with
+    images that are grayscale or which have an alpha channel
+
+    Parameters
+    ----------
+    path: string
+        Path to file
+    
+    Returns
+    -------
+    ndarray(M, N, 3)
+        An RGB color image in the range [0, 1]
+    """
+    img = plt.imread(path)
+    if np.issubdtype(img.dtype, np.integer):
+        img = np.array(img, dtype=float)/255
+    if len(img.shape) == 3:
+        if img.shape[1] > 3:
+            # Cut off alpha channel
+            img = img[:, :, 0:3]
+    if img.size == img.shape[0]*img.shape[1]:
+        # Grayscale, convert to rgb
+        img = np.concatenate((img[:, :, None], img[:, :, None], img[:, :, None]), axis=2)
+    return img
 
 def get_weights(I, thresh, p=1, canny_sigma=0):
     """
