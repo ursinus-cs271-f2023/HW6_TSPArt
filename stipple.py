@@ -1,6 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from numba import jit
 
 def read_image(path):
     """
@@ -81,7 +80,7 @@ def stochastic_universal_sample(weights, target_points, jitter=0.1):
     ndarray(N, 2)
         Location of point samples
     """
-    choices = np.zeros(target_points, dtype=int)
+    choices = np.zeros(target_points, dtype=np.int64)
     w = np.zeros(weights.size+1)
     order = np.random.permutation(weights.size)
     w[1::] = weights.flatten()[order]
@@ -100,23 +99,49 @@ def stochastic_universal_sample(weights, target_points, jitter=0.1):
         X += jitter*np.random.randn(X.shape[0], 2)
     return X
 
-@jit(nopython=True)
-def get_centroids(mask, N, weights):
+def get_centroids_edt(X, weights):
     """
-    Return the weighted centroids in a mask
+    Compute weighted centroids of Voronoi regions of points in X
+
+    Parameters
+    ----------
+    X: ndarray(n_points, 2)
+        Points locations
+    weights: ndarray(M, N)
+        Weights to use at each pixel in the Voronoi image
+    
+    Returns
+    -------
+    ndarray(<=n_points, 2)
+        Points moved to their centroids.  Note that some points may die
+        off if no pixel is nearest to them
     """
-    nums = np.zeros((N, 2))
-    denoms = np.zeros(N)
-    for i in range(weights.shape[0]):
-        for j in range(weights.shape[1]):
-            idx = int(mask[i, j])
-            weight = weights[i, j]
-            nums[idx, 0] += weight*i
-            nums[idx, 1] += weight*j
-            denoms[idx] += weight
-    nums = nums[denoms > 0, :]
-    denoms = denoms[denoms > 0]
-    return nums, denoms
+    from scipy.ndimage import distance_transform_edt
+    from scipy import sparse
+    ## Step 1: Comput Euclidean Distance Transform
+    mask = np.ones_like(weights)
+    X = np.array(np.round(X), dtype=np.int64)
+    mask[X[:, 0], X[:, 1]] = 0
+    _, inds = distance_transform_edt(mask, return_indices=True)
+    ## Step 2: Take weighted average of all points that have the same
+    ## label in the euclidean distance transform, using scipy's sparse
+    ## to quickly add up weighted coordinates of all points with the same label
+    inds = inds[0, :, :]*inds.shape[2] + inds[1, :, :]
+    inds = inds.flatten()
+    N = len(np.unique(inds))
+    idx2idx = -1*np.ones(inds.size)
+    idx2idx[np.unique(inds)] = np.arange(N)
+    inds = idx2idx[inds]
+    ii, jj = np.meshgrid(np.arange(weights.shape[0]), np.arange(weights.shape[1]), indexing='ij')
+    cols_i = (weights*ii).flatten()
+    cols_j = (weights*jj).flatten()
+    num_i = sparse.coo_matrix((cols_i, (inds, np.zeros(inds.size, dtype=np.int64))), shape=(N, 1)).toarray().flatten()
+    num_j = sparse.coo_matrix((cols_j, (inds, np.zeros(inds.size, dtype=np.int64))), shape=(N, 1)).toarray().flatten()
+    denom = sparse.coo_matrix((weights.flatten(), (inds, np.zeros(inds.size, dtype=np.int64))), shape=(N, 1)).toarray().flatten()
+    num_i = num_i[denom > 0]
+    num_j = num_j[denom > 0]
+    denom = denom[denom > 0]
+    return np.array([num_i/denom, num_j/denom]).T
 
 def voronoi_stipple(I, thresh, target_points, p=1, canny_sigma=0, n_iters=10, do_plot=False):
     """
@@ -141,17 +166,17 @@ def voronoi_stipple(I, thresh, target_points, p=1, canny_sigma=0, n_iters=10, do
     
     Returns
     -------
-    ndarray(N, 2)
+    ndarray(<=target_points, 2)
         An array of the stipple pattern, with x coordinates along the first
-        column and y coordinates along the second column
+        column and y coordinates along the second column.
+        Note that the number of points may be slightly less than the requested
+        points due to density filtering or resolution limits of the Voronoi computation
     """
-    from scipy.ndimage import distance_transform_edt
-    import time
     if np.max(I) > 1:
         I = I/255
     if len(I.shape) > 2:
         I = 0.2125*I[:, :, 0] + 0.7154*I[:, :, 1] + 0.0721*I[:, :, 2]
-    ## Step 1: Get weights and initialize random point distributin
+    ## Step 1: Get weights and initialize random point distribution
     ## via rejection sampling
     weights = get_weights(I, thresh, p, canny_sigma)
     X = stochastic_universal_sample(weights, target_points)
@@ -159,34 +184,19 @@ def voronoi_stipple(I, thresh, target_points, p=1, canny_sigma=0, n_iters=10, do
     X[X[:, 0] >= weights.shape[0], 0] = weights.shape[0]-1
     X[X[:, 1] >= weights.shape[1], 1] = weights.shape[1]-1
 
+    ## Step 2: Repeatedly re-compute centroids of Voronoi regions
     if do_plot:
         plt.figure(figsize=(10, 10))
     for it in range(n_iters):
         if do_plot:
             plt.clf()
-            plt.scatter(X[:, 1], X[:, 0], 4)
+            plt.scatter(X[:, 1], X[:, 0], 1)
             plt.gca().invert_yaxis()
             plt.xlim([0, weights.shape[1]])
             plt.ylim([weights.shape[0], 0])
             plt.savefig("Voronoi{}.png".format(it), facecolor='white')
-        
-        mask = np.ones_like(weights)
-        X = np.array(np.round(X), dtype=int)
-        mask[X[:, 0], X[:, 1]] = 0
+        X = get_centroids_edt(X, weights)
 
-        _, inds = distance_transform_edt(mask, return_indices=True)
-        ind2num = {}
-        for i in range(I.shape[0]):
-            for j in range(I.shape[1]):
-                coord = (inds[0, i, j], inds[1, i, j])
-                if not coord in ind2num:
-                    ind2num[coord] = len(ind2num)
-        for i in range(I.shape[0]):
-            for j in range(I.shape[1]):
-                coord = (inds[0, i, j], inds[1, i, j])
-                mask[i, j] = ind2num[coord]
-        nums, denoms = get_centroids(mask, len(ind2num), weights)
-        X = nums/denoms[:, None]
     X[:, 0] = I.shape[0]-X[:, 0]
     return np.fliplr(X)
 
