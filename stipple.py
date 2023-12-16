@@ -28,7 +28,7 @@ def read_image(path):
         img = np.concatenate((img[:, :, None], img[:, :, None], img[:, :, None]), axis=2)
     return img
 
-def get_weights(I, thresh, p=1, canny_sigma=0):
+def get_weights(I, thresh, p=1, grad_sigma=1, edge_thresh=0.5):
     """
     Create pre-pixel weights based on image brightness
 
@@ -40,6 +40,12 @@ def get_weights(I, thresh, p=1, canny_sigma=0):
         Amount above which to make a point 1
     p: float
         Contrast boost, apply weights^(1/p)
+    grad_sigma: float
+        If >0, incorporate gradients into weights using a smoothing
+        parameter of grad_sigma
+    edge_thresh: float
+        Threshold below which to ignore edges.  Lower thresholds will
+        include more edges
     
     Returns
     -------
@@ -54,12 +60,20 @@ def get_weights(I, thresh, p=1, canny_sigma=0):
     weights /= np.max(weights)
     weights = 1-weights
     weights = weights**(1/p)
-    if canny_sigma > 0:
-        from skimage import feature
-        edges = feature.canny(I, sigma=canny_sigma)
-        weights[edges > 0] = 1
+    if grad_sigma > 0:
+        from scipy import signal
+        w = int(np.ceil(grad_sigma*4))
+        x = np.arange(-w, w+1)
+        dgauss = x*np.exp(-x**2/(2*grad_sigma**2))
+        dgauss /= np.sum(dgauss*np.arange(dgauss.size))
+        Ix = signal.convolve2d(I, dgauss[None, :], mode='same', boundary='symm')
+        Iy = signal.convolve2d(I, dgauss[:, None], mode='same', boundary='symm')
+        grad = np.sqrt(Ix**2 + Iy**2)
+        grad /= np.max(grad)
+        grad = grad**0.2
+        grad[grad < edge_thresh] = 0
+        weights = np.maximum(weights, grad)
     return weights
-
 
 def stochastic_universal_sample(weights, target_points, jitter=0.1):
     """
@@ -143,7 +157,7 @@ def get_centroids_edt(X, weights):
     denom = denom[denom > 0]
     return np.array([num_i/denom, num_j/denom]).T
 
-def voronoi_stipple(I, thresh, target_points, p=1, canny_sigma=0, n_iters=10, do_plot=False):
+def voronoi_stipple(I, thresh, target_points, p=1, grad_sigma=1, edge_thresh=0.5, n_iters=10, do_plot=False):
     """
     An implementation of the method of [2]
 
@@ -157,8 +171,11 @@ def voronoi_stipple(I, thresh, target_points, p=1, canny_sigma=0, n_iters=10, do
         Amount above which to make a point 1
     p: float
         Contrast boost, apply weights^(1/p)
-    canny_sigma: float
+    grad_sigma: float
         If >0, use a canny edge detector with this standard deviation
+    edge_thresh: float
+        Threshold below which to ignore edges.  Lower thresholds will
+        include more edges
     n_iters: int
         Number of iterations
     do_plot: bool
@@ -178,7 +195,7 @@ def voronoi_stipple(I, thresh, target_points, p=1, canny_sigma=0, n_iters=10, do
         I = 0.2125*I[:, :, 0] + 0.7154*I[:, :, 1] + 0.0721*I[:, :, 2]
     ## Step 1: Get weights and initialize random point distribution
     ## via rejection sampling
-    weights = get_weights(I, thresh, p, canny_sigma)
+    weights = get_weights(I, thresh, p, grad_sigma=grad_sigma, edge_thresh=edge_thresh)
     X = stochastic_universal_sample(weights, target_points)
     X = np.array(np.round(X), dtype=int)
     X[X[:, 0] >= weights.shape[0], 0] = weights.shape[0]-1
@@ -224,3 +241,16 @@ def density_filter(X, fac, k=1):
     dd = np.mean(dd[:, 1::], axis=1)
     q = np.quantile(dd, fac)
     return X[dd < q, :]
+
+import numpy as np
+import matplotlib.pyplot as plt
+np.random.seed(0)
+I = read_image("images/penguins.png")
+# Initial stippling
+X = voronoi_stipple(I, thresh=0.2, target_points=2000, grad_sigma=0.8, edge_thresh=0.6)
+# Filter out lowest 4 points by density
+X = density_filter(X, (X.shape[0]-4)/X.shape[0]) 
+print(X.shape)
+plt.figure(figsize=(10, 10))
+plt.scatter(X[:, 0], X[:, 1], 2)
+plt.show()
