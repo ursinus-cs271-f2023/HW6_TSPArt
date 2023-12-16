@@ -241,16 +241,3 @@ def density_filter(X, fac, k=1):
     dd = np.mean(dd[:, 1::], axis=1)
     q = np.quantile(dd, fac)
     return X[dd < q, :]
-
-import numpy as np
-import matplotlib.pyplot as plt
-np.random.seed(0)
-I = read_image("images/penguins.png")
-# Initial stippling
-X = voronoi_stipple(I, thresh=0.2, target_points=2000, grad_sigma=0.8, edge_thresh=0.6)
-# Filter out lowest 4 points by density
-X = density_filter(X, (X.shape[0]-4)/X.shape[0]) 
-print(X.shape)
-plt.figure(figsize=(10, 10))
-plt.scatter(X[:, 0], X[:, 1], 2)
-plt.show()
